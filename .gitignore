@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+data/amazon_products.csv
+data/amazon_categories.csv
+data/products_clean.csv
