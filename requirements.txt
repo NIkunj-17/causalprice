@@ -1,5 +1,5 @@
 pandas>=2.2.3
-numpy>=1.26.4,<2.0.0
+numpy>=1.26.4
 scikit-learn>=1.5.0
 econml>=0.15.1
 dowhy>=0.11
@@ -9,5 +9,5 @@ joblib>=1.4.0
 requests>=2.31.0
 tqdm>=4.66.2
 plotly>=5.22.0
-gradio==4.31.0
 scipy>=1.13.0
+gradio>=4.44.0
