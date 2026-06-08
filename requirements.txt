@@ -11,3 +11,4 @@ tqdm>=4.66.2
 plotly>=5.22.0
 scipy>=1.13.0
 gradio>=4.44.0
+pyaudioop>=0.1.0
