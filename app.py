@@ -644,22 +644,17 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
 
     # Row 1: curve + competitor
     with gr.Row():
-        fig_curve = gr.Plot(label="Price sensitivity curve + bootstrap CI",
-                            show_label=True)
-        fig_comp  = gr.Plot(label="Competitor map in your category",
-                            show_label=True)
+        fig_curve = gr.Plot(label="Price sensitivity curve + bootstrap CI")
+        fig_comp  = gr.Plot(label="Competitor map in your category")
 
     # Row 2: distribution + category bar
     with gr.Row():
-        fig_dist = gr.Plot(label="Elasticity distribution — your product highlighted",
-                           show_label=True)
-        fig_cat  = gr.Plot(label="Category ranking — your category highlighted",
-                           show_label=True)
+        fig_dist  = gr.Plot(label="Elasticity distribution — your product highlighted")
+        fig_cat   = gr.Plot(label="Category ranking — your category highlighted")
 
     # Row 3: CATE heatmap (full width)
     with gr.Row():
-        fig_heat = gr.Plot(label="CATE heatmap — price level × market competition",
-                           show_label=True)
+        fig_heat  = gr.Plot(label="CATE heatmap — price level × market competition")
 
     # Validation section
     gr.Markdown("---")
