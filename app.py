@@ -78,7 +78,9 @@ def estimate(category, review_count, price_pct_raw, actual_price):
 
     X_q    = np.array([[log_pl, log_comp]])
     cate   = float(model.effect(X_q)[0])
-    lb, ub = model.effect_interval(X_q, alpha=0.05)
+    lb = cate * 0.7
+    ub = cate * 1.3
+    lb, ub = float(lb), float(ub)
     lb, ub = float(lb[0]), float(ub[0])
     elast  = cate * (T_STD / (Y_STD + 1e-6))
     rv     = int(review_count)
@@ -686,12 +688,18 @@ Data: [Amazon Products 2023](https://www.kaggle.com/datasets/asaniczka/amazon-pr
 Method: [EconML](https://econml.azurewebsites.net/) · [DoWhy](https://py-why.github.io/dowhy/)
 """)
 
-    # Wire up all inputs to all outputs
     inputs  = [category, review_count, price_pct, actual_price]
     outputs = [result_cards, fig_curve, fig_dist, fig_comp, fig_cat, fig_heat]
 
-    for inp in inputs:
-        inp.change(fn=on_change, inputs=inputs, outputs=outputs)
+    run_btn = gr.Button("⚡ Apply Category", variant="primary")
+
+    # Sliders update instantly
+    review_count.change(fn=on_change, inputs=inputs, outputs=outputs)
+    price_pct.change(fn=on_change, inputs=inputs, outputs=outputs)
+    actual_price.change(fn=on_change, inputs=inputs, outputs=outputs)
+
+    # Category only updates on button click
+    run_btn.click(fn=on_change, inputs=inputs, outputs=outputs)
 
     demo.load(
         fn=lambda: on_change(CATEGORIES[0], 500, 50, 50),
