@@ -625,22 +625,22 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
                                      label="Actual price ($)",
                                      info="Used as a key effect modifier")
 
-            gr.Markdown("**Try these examples:**")
-            gr.Examples(
-                examples=[
-                    ["Headphones & Earbuds",          8000, 80, 120],
-                    ["Smart Home: Security Cameras and Systems", 150, 85, 200],
-                    ["Video Games",                   2000, 55, 60 ],
-                    ["Computers",                     500,  70, 800],
-                    ["Skin Care Products",             300,  45, 35 ],
-                    ["Industrial Adhesives, Sealants & Lubricants", 80, 60, 25],
-                ],
-                inputs=[category, review_count, price_pct, actual_price],
-                examples_per_page=6,
-            )
-
         with gr.Column(scale=2):
             result_cards = gr.HTML()
+
+    gr.Markdown("**Try these examples:**")
+    gr.Examples(
+        examples=[
+            ["Headphones & Earbuds",          8000, 80, 120],
+            ["Smart Home: Security Cameras and Systems", 150, 85, 200],
+            ["Video Games",                   2000, 55, 60 ],
+            ["Computers",                     500,  70, 800],
+            ["Skin Care Products",             300,  45, 35 ],
+            ["Industrial Adhesives, Sealants & Lubricants", 80, 60, 25],
+        ],
+        inputs=[category, review_count, price_pct, actual_price],
+        examples_per_page=6,
+    )
 
     # Row 1: curve + competitor
     with gr.Row():
