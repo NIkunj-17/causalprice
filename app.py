@@ -55,6 +55,41 @@ cat_summary = (
 )
 CATEGORIES = sorted(df_feat["category"].dropna().unique().tolist())
 
+# ── Pre-compute grids for instant interpolation ───────────────────────────
+# This eliminates model.effect() calls at interaction time → ~50x speedup
+_GRID_N   = 80
+_lpl_min  = df_feat["log_price_level"].quantile(0.03)
+_lpl_max  = df_feat["log_price_level"].quantile(0.97)
+_lc_min   = df_feat["log_competition"].quantile(0.03)
+_lc_max   = df_feat["log_competition"].quantile(0.97)
+
+# 1-D price curve grid (for each possible log_competition value we interpolate)
+CURVE_GRID_LPL = np.linspace(_lpl_min, _lpl_max, _GRID_N)
+
+# 2-D heatmap grid: shape (N, N) — computed ONCE at startup
+_HM_N = 40
+_hm_lpl = np.linspace(_lpl_min, _lpl_max, _HM_N)
+_hm_lc  = np.linspace(_lc_min,  _lc_max,  _HM_N)
+_hm_pl_grid, _hm_lc_grid = np.meshgrid(_hm_lpl, _hm_lc)
+_X_hm   = np.column_stack([_hm_pl_grid.ravel(), _hm_lc_grid.ravel()])
+HEATMAP_Z = model.effect(_X_hm).reshape(_HM_N, _HM_N)
+HEATMAP_Z = np.clip(HEATMAP_Z, cate_p2, cate_p98)
+
+# Per log_competition slice: pre-compute curve effects for every unique
+# log_comp in cat_stats so fig_cate_curve just does a lookup + np.interp
+_unique_lc = np.linspace(_lc_min, _lc_max, 30)   # 30 slices covers all categories
+_X_curves  = np.array([[lpl, lc]
+                        for lc  in _unique_lc
+                        for lpl in CURVE_GRID_LPL])
+_curve_effects = model.effect(_X_curves).reshape(len(_unique_lc), _GRID_N)
+# Dict: lc_value → effect array (interpolate for any lc at runtime)
+CURVE_CACHE = dict(zip(_unique_lc, _curve_effects))
+
+def _get_curve_effects(log_comp: float) -> np.ndarray:
+    """Return CATE curve for given log_comp using nearest pre-computed slice."""
+    idx = int(np.argmin(np.abs(_unique_lc - log_comp)))
+    return _curve_effects[idx]
+
 # ── Color palette ─────────────────────────────────────────────────────────
 C_POS  = "#1D9E75"
 C_NEG  = "#D85A30"
@@ -76,16 +111,20 @@ def estimate(category, review_count, price_pct_raw, actual_price):
                else (float(row["log_price_level"].values[0]) if len(row)>0
                      else float(cat_stats["log_price_level"].median()))
 
-    X_q    = np.array([[log_pl, log_comp]])
-    cate   = float(model.effect(X_q)[0])
-    lb = cate * 0.7
-    ub = cate * 1.3
-    lb, ub = float(lb), float(ub)
-    lb, ub = float(np.squeeze(lb)), float(np.squeeze(ub))
-    elast  = cate * (T_STD / (Y_STD + 1e-6))
-    rv     = int(review_count)
-    dr     = np.expm1(np.log1p(rv) + cate) - rv
-    pct_r  = dr / rv * 100 if rv > 0 else 0
+    # Fast interpolation from pre-computed curve — no model.effect() call
+    curve_effs = _get_curve_effects(log_comp)
+    cate  = float(np.interp(log_pl, CURVE_GRID_LPL, curve_effs))
+    # CI: use bootstrap curve spread at this price point as uncertainty band
+    boot_curves = boot["curves"]  # shape (n_bootstrap, n_grid_points)
+    boot_grid   = boot["grid"]
+    b_at_pt = np.array([np.interp(log_pl, boot_grid, c) for c in boot_curves])
+    lb = float(np.percentile(b_at_pt, 5))
+    ub = float(np.percentile(b_at_pt, 95))
+
+    elast = cate * (T_STD / (Y_STD + 1e-6))
+    rv    = int(review_count)
+    dr    = np.expm1(np.log1p(rv) + cate) - rv
+    pct_r = dr / rv * 100 if rv > 0 else 0
 
     return dict(cate=cate, lb=lb, ub=ub, elast=elast,
                 pct_rank=(all_cate < cate).mean()*100,
@@ -179,17 +218,20 @@ def build_cards(est, category, review_count):
 
 # ── Plotly: CATE curve with bootstrap CI ─────────────────────────────────
 def fig_cate_curve(est, category):
-    grid   = boot["grid"]
-    curves = boot["curves"]
-    lc     = est["log_comp"]
-    lpl    = est["log_pl"]
-    cate   = est["cate"]
+    boot_grid = boot["grid"]
+    curves    = boot["curves"]
+    lc        = est["log_comp"]
+    lpl       = est["log_pl"]
+    cate      = est["cate"]
 
-    X_curve = np.column_stack([grid, np.full(len(grid), lc)])
-    effects = model.effect(X_curve)
-    shift   = effects - curves.mean(axis=0)
-    blo     = np.percentile(curves, 5,  axis=0) + shift
-    bhi     = np.percentile(curves, 95, axis=0) + shift
+    # Use pre-computed cache — no model.effect() call
+    grid    = CURVE_GRID_LPL
+    effects = _get_curve_effects(lc)
+
+    # Interpolate bootstrap curves to match our grid
+    curves_interp = np.array([np.interp(grid, boot_grid, c) for c in curves])
+    blo = np.percentile(curves_interp, 5,  axis=0)
+    bhi = np.percentile(curves_interp, 95, axis=0)
 
     # Natural price labels
     price_vals = [5, 15, 50, 150, 500, 1500]
@@ -424,19 +466,10 @@ def fig_category_bar(highlight=None):
 
 # ── Plotly: CATE heatmap (price level × competition) ─────────────────────
 def fig_cate_heatmap(est):
-    n = 40
-    lpl_range = np.linspace(
-        df_feat["log_price_level"].quantile(0.05),
-        df_feat["log_price_level"].quantile(0.95), n
-    )
-    lc_range = np.linspace(
-        df_feat["log_competition"].quantile(0.05),
-        df_feat["log_competition"].quantile(0.95), n
-    )
-    grid_pl, grid_lc = np.meshgrid(lpl_range, lc_range)
-    X_grid = np.column_stack([grid_pl.ravel(), grid_lc.ravel()])
-    Z = model.effect(X_grid).reshape(n, n)
-    Z = np.clip(Z, cate_p2, cate_p98)
+    # Use pre-computed grid — no model.effect() call
+    lpl_range = _hm_lpl
+    lc_range  = _hm_lc
+    Z         = HEATMAP_Z
 
     price_ticks = [5, 20, 100, 500, 2000]
     comp_ticks  = [50, 200, 500, 1000, 3000]
@@ -606,15 +639,14 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
     gr.Markdown("# CausalPrice\n### Causal effect of price on customer engagement — Amazon 2023")
     gr.HTML(HEADER_HTML)
     gr.Markdown("---")
-
     gr.Markdown(
         "### Estimate causal effect for your product\n"
-        "*Sliders update charts instantly. Change category then click **Apply Category**.*"
+        "*Sliders update instantly. Change category then click **Apply Category**.*"
     )
 
-    # ── Controls row: inputs + button + metric cards ──────────────────────
+    # ── Controls + metric cards ───────────────────────────────────────────
     with gr.Row():
-        with gr.Column(scale=1, min_width=320):
+        with gr.Column(scale=1, min_width=300):
             category     = gr.Dropdown(choices=CATEGORIES, value=CATEGORIES[0],
                                        label="Product category")
             run_btn      = gr.Button("⚡ Apply Category", variant="primary", size="sm")
@@ -631,18 +663,18 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
         with gr.Column(scale=2):
             result_cards = gr.HTML()
 
-    # ── Examples: full width below controls ──────────────────────────────
+    # ── Examples: full width ─────────────────────────────────────────────
     with gr.Row():
         with gr.Column():
-            gr.Markdown("**Try these examples** — click any row to load it:")
+            gr.Markdown("**Try these examples** — click any row to load:")
             gr.Examples(
                 examples=[
-                    ["Headphones & Earbuds",                          8000, 80, 120],
-                    ["Smart Home: Security Cameras and Systems",       150,  85, 200],
-                    ["Video Games",                                    2000, 55, 60 ],
-                    ["Computers",                                      500,  70, 800],
-                    ["Skin Care Products",                             300,  45, 35 ],
-                    ["Industrial Adhesives, Sealants & Lubricants",   80,   60, 25 ],
+                    ["Headphones & Earbuds",                        8000, 80, 120],
+                    ["Smart Home: Security Cameras and Systems",      150, 85, 200],
+                    ["Video Games",                                  2000, 55, 60 ],
+                    ["Computers",                                     500, 70, 800],
+                    ["Skin Care Products",                            300, 45, 35 ],
+                    ["Industrial Adhesives, Sealants & Lubricants",   80, 60, 25 ],
                 ],
                 inputs=[category, review_count, price_pct, actual_price],
                 examples_per_page=6,
@@ -676,10 +708,10 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
 ---
 **Technical:** `CausalForestDML` (EconML) · `GradientBoostingRegressor` nuisance models ·
 5-fold cross-fitting · 600 trees · 7 confounders · bootstrap CI from 200 resampled models ·
-trained on {results['n_categories']} categories.
+trained on {results['n_categories']} categories · **inference via pre-computed grid interpolation**.
 
 **Why log(reviews)?** Binary P(rating≥4.0) has 90% baseline → Bernoulli variance=0.09.
-log(review_count) has std≈1.8 → 6× more signal. Review volume is a published proxy for sales (Chevalier & Mayzlin 2006).
+log(review_count) std≈1.8 → 6× more signal. Published proxy for sales (Chevalier & Mayzlin 2006).
 
 Data: [Amazon Products 2023](https://www.kaggle.com/datasets/asaniczka/amazon-products-dataset-2023-1-4m-products) ·
 Method: [EconML](https://econml.azurewebsites.net/) · [DoWhy](https://py-why.github.io/dowhy/)
@@ -689,12 +721,12 @@ Method: [EconML](https://econml.azurewebsites.net/) · [DoWhy](https://py-why.gi
     inputs  = [category, review_count, price_pct, actual_price]
     outputs = [result_cards, fig_curve, fig_dist, fig_comp, fig_cat, fig_heat]
 
-    # Sliders: instant update
+    # Sliders: instant
     review_count.change(fn=on_change, inputs=inputs, outputs=outputs)
     price_pct.change(fn=on_change, inputs=inputs, outputs=outputs)
     actual_price.change(fn=on_change, inputs=inputs, outputs=outputs)
 
-    # Category: requires button click
+    # Category: requires button
     run_btn.click(fn=on_change, inputs=inputs, outputs=outputs)
 
     # Initial load
