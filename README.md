@@ -48,7 +48,9 @@ Using 258,069 real Amazon Electronics products (Sep 2023), this system estimates
 
 **The headline finding:** Premium pricing causally suppresses customer engagement on average (ATE = −0.72, p = 0.004). But this average hides dramatic heterogeneity — individual product elasticities range from −1.94 to +1.43.
 
-**The insight:** Premium pricing *helps* in experience goods (headphones, video games — quality is hard to assess before purchase, so price signals it) and *hurts* in commodity categories (smart home devices, cables — specs are transparent, high price raises expectations without delivering). This is consistent with **information asymmetry theory** (Akerlof, 1970).
+**The insight:** Premium pricing *suppresses* engagement across most categories — 
+even experience goods like headphones show negative effects at scale, 
+suggesting Amazon buyers are price-sensitive regardless of category.
 
 ---
 
