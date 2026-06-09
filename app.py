@@ -55,40 +55,33 @@ cat_summary = (
 )
 CATEGORIES = sorted(df_feat["category"].dropna().unique().tolist())
 
-# ── Pre-compute grids for instant interpolation ───────────────────────────
-# This eliminates model.effect() calls at interaction time → ~50x speedup
-_GRID_N   = 80
-_lpl_min  = df_feat["log_price_level"].quantile(0.03)
-_lpl_max  = df_feat["log_price_level"].quantile(0.97)
-_lc_min   = df_feat["log_competition"].quantile(0.03)
-_lc_max   = df_feat["log_competition"].quantile(0.97)
+# ── Per-category cache (lazy, built on first access) ─────────────────────
+import functools
 
-# 1-D price curve grid (for each possible log_competition value we interpolate)
+_GRID_N        = 50
+_lpl_min       = df_feat["log_price_level"].quantile(0.03)
+_lpl_max       = df_feat["log_price_level"].quantile(0.97)
+_lc_min        = df_feat["log_competition"].quantile(0.03)
+_lc_max        = df_feat["log_competition"].quantile(0.97)
 CURVE_GRID_LPL = np.linspace(_lpl_min, _lpl_max, _GRID_N)
 
-# 2-D heatmap grid: shape (N, N) — computed ONCE at startup
-_HM_N = 40
-_hm_lpl = np.linspace(_lpl_min, _lpl_max, _HM_N)
-_hm_lc  = np.linspace(_lc_min,  _lc_max,  _HM_N)
-_hm_pl_grid, _hm_lc_grid = np.meshgrid(_hm_lpl, _hm_lc)
-_X_hm   = np.column_stack([_hm_pl_grid.ravel(), _hm_lc_grid.ravel()])
-HEATMAP_Z = model.effect(_X_hm).reshape(_HM_N, _HM_N)
-HEATMAP_Z = np.clip(HEATMAP_Z, cate_p2, cate_p98)
+# Heatmap: 25×25 = 625 points — fast at startup
+_HM_N           = 25
+_hm_lpl         = np.linspace(_lpl_min, _lpl_max, _HM_N)
+_hm_lc          = np.linspace(_lc_min,  _lc_max,  _HM_N)
+_hm_pl_g, _hm_lc_g = np.meshgrid(_hm_lpl, _hm_lc)
+_X_hm           = np.column_stack([_hm_pl_g.ravel(), _hm_lc_g.ravel()])
+HEATMAP_Z       = model.effect(_X_hm).reshape(_HM_N, _HM_N)
+HEATMAP_Z       = np.clip(HEATMAP_Z, cate_p2, cate_p98)
 
-# Per log_competition slice: pre-compute curve effects for every unique
-# log_comp in cat_stats so fig_cate_curve just does a lookup + np.interp
-_unique_lc = np.linspace(_lc_min, _lc_max, 30)   # 30 slices covers all categories
-_X_curves  = np.array([[lpl, lc]
-                        for lc  in _unique_lc
-                        for lpl in CURVE_GRID_LPL])
-_curve_effects = model.effect(_X_curves).reshape(len(_unique_lc), _GRID_N)
-# Dict: lc_value → effect array (interpolate for any lc at runtime)
-CURVE_CACHE = dict(zip(_unique_lc, _curve_effects))
+# Per-category curve cache — computed lazily on first click per category
+_CURVE_CACHE: dict = {}
 
-def _get_curve_effects(log_comp: float) -> np.ndarray:
-    """Return CATE curve for given log_comp using nearest pre-computed slice."""
-    idx = int(np.argmin(np.abs(_unique_lc - log_comp)))
-    return _curve_effects[idx]
+def _get_curve_for_category(category: str, log_comp: float) -> np.ndarray:
+    if category not in _CURVE_CACHE:
+        X = np.column_stack([CURVE_GRID_LPL, np.full(_GRID_N, log_comp)])
+        _CURVE_CACHE[category] = model.effect(X)  # ~0.1s, cached after first
+    return _CURVE_CACHE[category]
 
 # ── Color palette ─────────────────────────────────────────────────────────
 C_POS  = "#1D9E75"
@@ -111,8 +104,8 @@ def estimate(category, review_count, price_pct_raw, actual_price):
                else (float(row["log_price_level"].values[0]) if len(row)>0
                      else float(cat_stats["log_price_level"].median()))
 
-    # Fast interpolation from pre-computed curve — no model.effect() call
-    curve_effs = _get_curve_effects(log_comp)
+    # Lazy cache: first call per category ~0.1s, all subsequent calls instant
+    curve_effs = _get_curve_for_category(category, log_comp)
     cate  = float(np.interp(log_pl, CURVE_GRID_LPL, curve_effs))
     # CI: use bootstrap curve spread at this price point as uncertainty band
     boot_curves = boot["curves"]  # shape (n_bootstrap, n_grid_points)
@@ -224,9 +217,9 @@ def fig_cate_curve(est, category):
     lpl       = est["log_pl"]
     cate      = est["cate"]
 
-    # Use pre-computed cache — no model.effect() call
+    # Use per-category cache — correct log_comp, instant after first call
     grid    = CURVE_GRID_LPL
-    effects = _get_curve_effects(lc)
+    effects = _get_curve_for_category(category, lc)
 
     # Interpolate bootstrap curves to match our grid
     curves_interp = np.array([np.interp(grid, boot_grid, c) for c in curves])
