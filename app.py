@@ -81,7 +81,7 @@ def estimate(category, review_count, price_pct_raw, actual_price):
     lb = cate * 0.7
     ub = cate * 1.3
     lb, ub = float(lb), float(ub)
-    lb, ub = float(lb[0]), float(ub[0])
+    lb, ub = float(np.squeeze(lb)), float(np.squeeze(ub))
     elast  = cate * (T_STD / (Y_STD + 1e-6))
     rv     = int(review_count)
     dr     = np.expm1(np.log1p(rv) + cate) - rv
