@@ -55,33 +55,56 @@ cat_summary = (
 )
 CATEGORIES = sorted(df_feat["category"].dropna().unique().tolist())
 
-# ── Per-category cache (lazy, built on first access) ─────────────────────
-import functools
+# ── Fast lookup tables built from already-computed df_feat ────────────────
+# df_feat already has cate + elasticity for every product in the dataset.
+# We use these to build per-category interpolation curves — ZERO extra
+# model.effect() calls at interaction time.
 
-_GRID_N        = 50
-_lpl_min       = df_feat["log_price_level"].quantile(0.03)
-_lpl_max       = df_feat["log_price_level"].quantile(0.97)
-_lc_min        = df_feat["log_competition"].quantile(0.03)
-_lc_max        = df_feat["log_competition"].quantile(0.97)
-CURVE_GRID_LPL = np.linspace(_lpl_min, _lpl_max, _GRID_N)
+_lpl_min = df_feat["log_price_level"].quantile(0.03)
+_lpl_max = df_feat["log_price_level"].quantile(0.97)
+_lc_min  = df_feat["log_competition"].quantile(0.03)
+_lc_max  = df_feat["log_competition"].quantile(0.97)
 
-# Heatmap: 25×25 = 625 points — fast at startup
-_HM_N           = 25
-_hm_lpl         = np.linspace(_lpl_min, _lpl_max, _HM_N)
-_hm_lc          = np.linspace(_lc_min,  _lc_max,  _HM_N)
+# Per-category sorted price→cate arrays for np.interp
+_CAT_CURVES: dict = {}
+for _cat, _grp in df_feat.groupby("category"):
+    _sorted = _grp.sort_values("log_price_level")
+    _CAT_CURVES[_cat] = (
+        _sorted["log_price_level"].values,
+        _sorted["cate"].values,
+    )
+
+def _interp_cate(category: str, log_pl: float, log_comp: float) -> float:
+    """Instant CATE estimate via linear interpolation on existing data points."""
+    if category in _CAT_CURVES:
+        xp, fp = _CAT_CURVES[category]
+        return float(np.interp(log_pl, xp, fp))
+    # Fallback: nearest neighbour in full dataset
+    dists = (df_feat["log_price_level"] - log_pl)**2 + \
+            (df_feat["log_competition"]  - log_comp)**2
+    return float(df_feat.loc[dists.idxmin(), "cate"])
+
+# Heatmap: built from df_feat directly via griddata interpolation — no model calls
+from scipy.interpolate import griddata as _griddata
+_HM_N   = 30
+_hm_lpl = np.linspace(_lpl_min, _lpl_max, _HM_N)
+_hm_lc  = np.linspace(_lc_min,  _lc_max,  _HM_N)
 _hm_pl_g, _hm_lc_g = np.meshgrid(_hm_lpl, _hm_lc)
-_X_hm           = np.column_stack([_hm_pl_g.ravel(), _hm_lc_g.ravel()])
-HEATMAP_Z       = model.effect(_X_hm).reshape(_HM_N, _HM_N)
-HEATMAP_Z       = np.clip(HEATMAP_Z, cate_p2, cate_p98)
+HEATMAP_Z = _griddata(
+    df_feat[["log_price_level","log_competition"]].values,
+    df_feat["cate"].values,
+    (_hm_pl_g, _hm_lc_g),
+    method="linear",
+    fill_value=float(ATE),
+)
+HEATMAP_Z = np.clip(HEATMAP_Z, cate_p2, cate_p98)
 
-# Per-category curve cache — computed lazily on first click per category
-_CURVE_CACHE: dict = {}
-
-def _get_curve_for_category(category: str, log_comp: float) -> np.ndarray:
-    if category not in _CURVE_CACHE:
-        X = np.column_stack([CURVE_GRID_LPL, np.full(_GRID_N, log_comp)])
-        _CURVE_CACHE[category] = model.effect(X)  # ~0.1s, cached after first
-    return _CURVE_CACHE[category]
+# Per-category smooth curve for the price-sensitivity chart
+_GRID_N        = 60
+CURVE_GRID_LPL = np.linspace(_lpl_min, _lpl_max, _GRID_N)
+_CAT_SMOOTH: dict = {}
+for _cat, (_xp, _fp) in _CAT_CURVES.items():
+    _CAT_SMOOTH[_cat] = np.interp(CURVE_GRID_LPL, _xp, _fp)
 
 # ── Color palette ─────────────────────────────────────────────────────────
 C_POS  = "#1D9E75"
@@ -104,12 +127,12 @@ def estimate(category, review_count, price_pct_raw, actual_price):
                else (float(row["log_price_level"].values[0]) if len(row)>0
                      else float(cat_stats["log_price_level"].median()))
 
-    # Lazy cache: first call per category ~0.1s, all subsequent calls instant
-    curve_effs = _get_curve_for_category(category, log_comp)
-    cate  = float(np.interp(log_pl, CURVE_GRID_LPL, curve_effs))
-    # CI: use bootstrap curve spread at this price point as uncertainty band
-    boot_curves = boot["curves"]  # shape (n_bootstrap, n_grid_points)
+    # Instant interpolation — pure numpy, zero model calls
+    cate  = _interp_cate(category, log_pl, log_comp)
+
+    # CI from bootstrap curves (already loaded, no model call)
     boot_grid   = boot["grid"]
+    boot_curves = boot["curves"]
     b_at_pt = np.array([np.interp(log_pl, boot_grid, c) for c in boot_curves])
     lb = float(np.percentile(b_at_pt, 5))
     ub = float(np.percentile(b_at_pt, 95))
@@ -217,9 +240,9 @@ def fig_cate_curve(est, category):
     lpl       = est["log_pl"]
     cate      = est["cate"]
 
-    # Use per-category cache — correct log_comp, instant after first call
+    # Instant lookup — no model calls
     grid    = CURVE_GRID_LPL
-    effects = _get_curve_for_category(category, lc)
+    effects = _CAT_SMOOTH.get(category, np.full(_GRID_N, ATE))
 
     # Interpolate bootstrap curves to match our grid
     curves_interp = np.array([np.interp(grid, boot_grid, c) for c in curves])
