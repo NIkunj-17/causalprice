@@ -605,24 +605,25 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
 
     gr.Markdown("# CausalPrice\n### Causal effect of price on customer engagement — Amazon 2023")
     gr.HTML(HEADER_HTML)
-
     gr.Markdown("---")
+
     gr.Markdown(
         "### Estimate causal effect for your product\n"
-        "*All 5 charts update instantly as you move the sliders — "
-        "hover over any chart for exact values.*"
+        "*Sliders update charts instantly. Change category then click **Apply Category**.*"
     )
 
+    # ── Controls row: inputs + button + metric cards ──────────────────────
     with gr.Row():
-        with gr.Column(scale=1):
+        with gr.Column(scale=1, min_width=320):
             category     = gr.Dropdown(choices=CATEGORIES, value=CATEGORIES[0],
                                        label="Product category")
+            run_btn      = gr.Button("⚡ Apply Category", variant="primary", size="sm")
             review_count = gr.Slider(10, 50000, value=500, step=10,
                                      label="Current review count",
                                      info="Used to calculate absolute review impact")
             price_pct    = gr.Slider(0, 100, value=50, step=1,
                                      label="Price percentile in category (%)",
-                                     info="50=median · 90=top 10% most expensive")
+                                     info="50 = median · 90 = top 10% most expensive")
             actual_price = gr.Slider(1, 3000, value=50, step=1,
                                      label="Actual price ($)",
                                      info="Used as a key effect modifier")
@@ -630,37 +631,36 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
         with gr.Column(scale=2):
             result_cards = gr.HTML()
 
+    # ── Examples: full width below controls ──────────────────────────────
     with gr.Row():
-        with gr.Column(scale=1, min_width=800):
-            gr.Markdown("**Try these examples:**")
+        with gr.Column():
+            gr.Markdown("**Try these examples** — click any row to load it:")
             gr.Examples(
                 examples=[
-                    ["Headphones & Earbuds",          8000, 80, 120],
-                    ["Smart Home: Security Cameras and Systems", 150, 85, 200],
-                    ["Video Games",                   2000, 55, 60 ],
-                    ["Computers",                     500,  70, 800],
-                    ["Skin Care Products",             300,  45, 35 ],
-                    ["Industrial Adhesives, Sealants & Lubricants", 80, 60, 25],
+                    ["Headphones & Earbuds",                          8000, 80, 120],
+                    ["Smart Home: Security Cameras and Systems",       150,  85, 200],
+                    ["Video Games",                                    2000, 55, 60 ],
+                    ["Computers",                                      500,  70, 800],
+                    ["Skin Care Products",                             300,  45, 35 ],
+                    ["Industrial Adhesives, Sealants & Lubricants",   80,   60, 25 ],
                 ],
                 inputs=[category, review_count, price_pct, actual_price],
                 examples_per_page=6,
             )
 
-    # Row 1: curve + competitor
+    # ── Charts ────────────────────────────────────────────────────────────
     with gr.Row():
         fig_curve = gr.Plot(label="Price sensitivity curve + bootstrap CI")
         fig_comp  = gr.Plot(label="Competitor map in your category")
 
-    # Row 2: distribution + category bar
     with gr.Row():
         fig_dist  = gr.Plot(label="Elasticity distribution — your product highlighted")
         fig_cat   = gr.Plot(label="Category ranking — your category highlighted")
 
-    # Row 3: CATE heatmap (full width)
     with gr.Row():
         fig_heat  = gr.Plot(label="CATE heatmap — price level × market competition")
 
-    # Validation section
+    # ── Validation ────────────────────────────────────────────────────────
     gr.Markdown("---")
     gr.Markdown(
         f"### Model validation\n"
@@ -674,37 +674,31 @@ with gr.Blocks(title="CausalPrice — Causal Inference Dashboard") as demo:
 
     gr.Markdown(f"""
 ---
-**Technical:**
-`CausalForestDML` (EconML) · `GradientBoostingRegressor` nuisance models · 5-fold cross-fitting ·
-600 trees · 7 confounders · bootstrap CI from 200 resampled models ·
+**Technical:** `CausalForestDML` (EconML) · `GradientBoostingRegressor` nuisance models ·
+5-fold cross-fitting · 600 trees · 7 confounders · bootstrap CI from 200 resampled models ·
 trained on {results['n_categories']} categories.
 
-**Why log(reviews) as outcome?**
-Binary P(rating≥4.0) has 90% baseline → Bernoulli variance=0.09.
-log(review_count) has std≈1.8 → 6× more signal.
-Review volume is a published proxy for sales (Chevalier & Mayzlin 2006).
+**Why log(reviews)?** Binary P(rating≥4.0) has 90% baseline → Bernoulli variance=0.09.
+log(review_count) has std≈1.8 → 6× more signal. Review volume is a published proxy for sales (Chevalier & Mayzlin 2006).
 
 Data: [Amazon Products 2023](https://www.kaggle.com/datasets/asaniczka/amazon-products-dataset-2023-1-4m-products) ·
 Method: [EconML](https://econml.azurewebsites.net/) · [DoWhy](https://py-why.github.io/dowhy/)
 """)
 
+    # ── Wiring ────────────────────────────────────────────────────────────
     inputs  = [category, review_count, price_pct, actual_price]
     outputs = [result_cards, fig_curve, fig_dist, fig_comp, fig_cat, fig_heat]
 
-    run_btn = gr.Button("⚡ Apply Category", variant="primary")
-
-    # Sliders update instantly
+    # Sliders: instant update
     review_count.change(fn=on_change, inputs=inputs, outputs=outputs)
     price_pct.change(fn=on_change, inputs=inputs, outputs=outputs)
     actual_price.change(fn=on_change, inputs=inputs, outputs=outputs)
 
-    # Category only updates on button click
+    # Category: requires button click
     run_btn.click(fn=on_change, inputs=inputs, outputs=outputs)
 
-    demo.load(
-        fn=lambda: on_change(CATEGORIES[0], 500, 50, 50),
-        outputs=outputs,
-    )
+    # Initial load
+    demo.load(fn=lambda: on_change(CATEGORIES[0], 500, 50, 50), outputs=outputs)
 
 if __name__ == "__main__":
     demo.launch()
